@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+venv/
+.venv/
+
+# Model weights and outputs
+models/
+figures/
+results/*.json
+!results/.gitkeep
+
+# YOLO training artefacts
+runs/
+deep_learning/voc2007.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
