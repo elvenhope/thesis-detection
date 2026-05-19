@@ -61,7 +61,7 @@ def main():
     from run_evaluation import (
         evaluate_hog_svm, evaluate_yolo,
         evaluate_faster_rcnn, evaluate_ssd, evaluate_yolov5,
-        combine_results,
+        combine_results, persist_to_database,
     )
 
     voc_test = config.VOC_ROOT_TEST
@@ -72,7 +72,8 @@ def main():
     ssd_res   = evaluate_ssd(voc_root_test=voc_test)          if not args.skip_ssd_eval   else None
     yv5_res   = evaluate_yolov5(voc_root_test=voc_test)       if not args.skip_yv5_eval   else None
 
-    combine_results(hog_res, yolo_res, frcnn_res, ssd_res, yv5_res)
+    combined = combine_results(hog_res, yolo_res, frcnn_res, ssd_res, yv5_res)
+    persist_to_database(combined)
 
     # 4. Generate figures
     print("\nSTEP 4/4  Generating thesis figures ...")

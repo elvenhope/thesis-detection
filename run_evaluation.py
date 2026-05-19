@@ -2,6 +2,9 @@
 Evaluation runner: benchmarks all five detectors on VOC 2007 test.
 
 Outputs individual JSON results per model plus a combined summary.
+Results are also persisted to an SQLite database (results/benchmark.db)
+via the ResultsDatabase class defined in results_db.py.
+
 COCO-pretrained models (Faster R-CNN, SSD300, YOLOv5n) are evaluated
 in a zero-shot transfer setting without fine-tuning on VOC.
 """
@@ -320,6 +323,114 @@ def combine_results(hog_res, yolo_res, frcnn_res=None, ssd_res=None, yv5_res=Non
     return combined
 
 
+# -- DATABASE PERSISTENCE --
+
+# Model metadata (matches Chapter 2 of the thesis)
+_MODEL_META = {
+    "HOG_SVM": {
+        "type": "classical", "architecture": "sliding_window",
+        "backbone": None, "pretrained_on": None, "fine_tuned_on": "VOC2007",
+        "conf": 0.5, "nms_iou": 0.5,
+    },
+    "Faster_RCNN": {
+        "type": "deep_learning", "architecture": "two_stage",
+        "backbone": "ResNet-50 FPN", "pretrained_on": "COCO", "fine_tuned_on": None,
+        "conf": 0.3, "nms_iou": 0.5,
+    },
+    "SSD300": {
+        "type": "deep_learning", "architecture": "one_stage",
+        "backbone": "VGG-16", "pretrained_on": "COCO", "fine_tuned_on": None,
+        "conf": 0.3, "nms_iou": 0.5,
+    },
+    "YOLOv5n": {
+        "type": "deep_learning", "architecture": "one_stage",
+        "backbone": "CSPDarknet (C3)", "pretrained_on": "COCO", "fine_tuned_on": None,
+        "conf": 0.25, "nms_iou": 0.45,
+    },
+    "YOLOv8n": {
+        "type": "deep_learning", "architecture": "one_stage",
+        "backbone": "CSPDarknet (C2f)", "pretrained_on": "COCO", "fine_tuned_on": "VOC2007",
+        "conf": 0.25, "nms_iou": 0.7,
+    },
+}
+
+# VOC 2007 test set class instance counts (non-difficult)
+_CLASS_INSTANCES = {
+    "aeroplane": 285, "bicycle": 337, "bird": 459, "boat": 263,
+    "bottle": 469, "bus": 213, "car": 1201, "cat": 358,
+    "chair": 756, "cow": 244, "diningtable": 206, "dog": 489,
+    "horse": 348, "motorbike": 325, "person": 4528,
+    "pottedplant": 480, "sheep": 242, "sofa": 239, "train": 282,
+    "tvmonitor": 308,
+}
+
+
+def persist_to_database(combined: dict) -> None:
+    """
+    Write the combined results dict into the SQLite database.
+    Called after combine_results() so both JSON and DB stay in sync.
+    """
+    from results_db import ResultsDatabase
+
+    db_path = os.path.join(OUTPUT_DIR, "benchmark.db")
+    db = ResultsDatabase(db_path)
+    db.init_schema()
+
+    # Insert dataset (one record: VOC 2007 test split)
+    dataset_id = db.insert_dataset(
+        name="Pascal VOC", version="2007", split="test",
+        num_images=4952, num_classes=20,
+    )
+
+    # Insert the 20 object classes
+    class_ids = {}
+    for cls_name, count in _CLASS_INSTANCES.items():
+        class_ids[cls_name] = db.insert_object_class(cls_name, count)
+
+    # Insert each model, experiment, and results
+    for key, data in combined.items():
+        if data is None:
+            continue
+        meta = _MODEL_META.get(key, {})
+
+        model_id = db.insert_model(
+            name=data.get("model", key),
+            type_=meta.get("type", "unknown"),
+            architecture=meta.get("architecture", "unknown"),
+            backbone=meta.get("backbone"),
+            model_size_mb=data.get("model_size_mb"),
+            pretrained_on=meta.get("pretrained_on"),
+            fine_tuned_on=meta.get("fine_tuned_on"),
+        )
+
+        experiment_id = db.insert_experiment(
+            model_id=model_id,
+            dataset_id=dataset_id,
+            hardware="Apple M1 CPU (8 GB RAM)",
+            confidence_threshold=meta.get("conf"),
+            nms_iou_threshold=meta.get("nms_iou"),
+        )
+
+        db.insert_overall_result(
+            experiment_id=experiment_id,
+            map_50=data.get("mAP", 0),
+            fps=data.get("fps"),
+            mean_inference_ms=data.get("mean_ms"),
+            ram_delta_mb=data.get("ram_delta_mb"),
+        )
+
+        for cls_name, ap in data.get("per_class_ap", {}).items():
+            if cls_name in class_ids:
+                db.insert_per_class_result(
+                    experiment_id=experiment_id,
+                    class_id=class_ids[cls_name],
+                    average_precision=ap,
+                )
+
+    db.close()
+    print(f"Database saved: {db_path}")
+
+
 def _model_size_from_params(model: torch.nn.Module) -> float:
     """Approximate model size in MB from parameter count."""
     total_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
@@ -355,4 +466,5 @@ if __name__ == "__main__":
         yv5_res   = evaluate_yolov5()
 
     if run_all:
-        combine_results(hog_res, yolo_res, frcnn_res, ssd_res, yv5_res)
+        combined = combine_results(hog_res, yolo_res, frcnn_res, ssd_res, yv5_res)
+        persist_to_database(combined)
